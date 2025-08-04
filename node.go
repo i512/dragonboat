@@ -74,59 +74,61 @@ type leaderInfo struct {
 }
 
 type node struct {
-	shardInfo             atomic.Value
-	leaderInfo            atomic.Value
-	nodeRegistry          raftio.INodeRegistry
-	logdb                 raftio.ILogDB
-	pipeline              pipeline
-	getStreamSink         func(uint64, uint64) *transport.Sink
-	ss                    snapshotState
-	configChangeC         <-chan configChangeRequest
-	snapshotC             <-chan rsm.SSRequest
-	toApplyQ              *rsm.TaskQueue
-	toCommitQ             *rsm.TaskQueue
-	syncTask              task
-	metrics               *logDBMetrics
-	stopC                 chan struct{}
-	sysEvents             *sysEventListener
-	raftEvents            *raftEventListener
-	handleSnapshotStatus  func(uint64, uint64, bool)
-	sendRaftMessage       func(pb.Message)
-	validateTarget        func(string) bool
-	sm                    *rsm.StateMachine
-	incomingReadIndexes   *readIndexQueue
-	incomingProposals     *entryQueue
-	snapshotLock          sync.Mutex
-	pendingProposals      pendingProposal
-	pendingReadIndexes    pendingReadIndex
-	pendingConfigChange   pendingConfigChange
-	pendingSnapshot       pendingSnapshot
-	pendingLeaderTransfer pendingLeaderTransfer
-	pendingRaftLogQuery   pendingRaftLogQuery
-	initializedC          chan struct{}
-	p                     raft.Peer
-	logReader             *logdb.LogReader
-	snapshotter           *snapshotter
-	mq                    *server.MessageQueue
-	qs                    *quiesceState
-	raftAddress           string
-	config                config.Config
-	currentTick           uint64
-	gcTick                uint64
-	appliedIndex          uint64
-	pushedIndex           uint64
-	confirmedIndex        uint64
-	tickMillisecond       uint64
-	shardID               uint64
-	replicaID             uint64
-	instanceID            uint64
-	initializedFlag       uint64
-	closeOnce             sync.Once
-	raftMu                sync.Mutex
-	new                   bool
-	logDBLimited          bool
-	rateLimited           bool
-	notifyCommit          bool
+	shardInfo                    atomic.Value
+	leaderInfo                   atomic.Value
+	nodeRegistry                 raftio.INodeRegistry
+	logdb                        raftio.ILogDB
+	pipeline                     pipeline
+	getStreamSink                func(uint64, uint64) *transport.Sink
+	ss                           snapshotState
+	configChangeC                <-chan configChangeRequest
+	snapshotC                    <-chan rsm.SSRequest
+	toApplyQ                     *rsm.TaskQueue
+	toCommitQ                    *rsm.TaskQueue
+	syncTask                     task
+	metrics                      *logDBMetrics
+	stopC                        chan struct{}
+	sysEvents                    *sysEventListener
+	raftEvents                   *raftEventListener
+	handleSnapshotStatus         func(uint64, uint64, bool)
+	sendRaftMessage              func(pb.Message)
+	validateTarget               func(string) bool
+	sm                           *rsm.StateMachine
+	incomingReadIndexes          *readIndexQueue
+	incomingProposals            *entryQueue
+	snapshotLock                 sync.Mutex
+	pendingProposals             pendingProposal
+	pendingReadIndexes           pendingReadIndex
+	pendingConfigChange          pendingConfigChange
+	pendingSnapshot              pendingSnapshot
+	pendingLeaderTransfer        pendingLeaderTransfer
+	pendingRaftLogQuery          pendingRaftLogQuery
+	initializedC                 chan struct{}
+	p                            raft.Peer
+	logReader                    *logdb.LogReader
+	snapshotter                  *snapshotter
+	mq                           *server.MessageQueue
+	qs                           *quiesceState
+	raftAddress                  string
+	config                       config.Config
+	currentTick                  uint64
+	gcTick                       uint64
+	appliedIndex                 uint64
+	pushedIndex                  uint64
+	confirmedIndex               uint64
+	tickMillisecond              uint64
+	shardID                      uint64
+	replicaID                    uint64
+	instanceID                   uint64
+	initializedFlag              uint64
+	closeOnce                    sync.Once
+	raftMu                       sync.Mutex
+	new                          bool
+	logDBLimited                 bool
+	rateLimited                  bool
+	notifyCommit                 bool
+	destroyedByStateMachineError bool
+	stateMachineError            error
 }
 
 var _ rsm.INode = (*node)(nil)
@@ -401,6 +403,22 @@ func (n *node) requestRemoval() {
 		close(n.stopC)
 	})
 	plog.Debugf("%s called requestRemoval()", n.id())
+}
+
+func (n *node) setDestroyedByStateMachineError() {
+	n.destroyedByStateMachineError = true
+}
+
+func (n *node) setStateMachineError(err error) {
+	n.stateMachineError = err
+}
+
+func (n *node) getStateMachineError() error {
+	return n.stateMachineError
+}
+
+func (n *node) wasDestroyedByStateMachineError() bool {
+	return n.destroyedByStateMachineError
 }
 
 func (n *node) concurrentSnapshot() bool {
@@ -849,6 +867,7 @@ func (n *node) recover(rec rsm.Task) (_ uint64, err error) {
 				plog.Warningf("%s aborted OpenOnDiskStateMachine", n.id())
 				return 0, nil
 			}
+
 			return 0, errors.Wrapf(err, "%s OpenOnDiskStateMachine failed", n.id())
 		}
 		if idx > 0 && rec.NewNode {

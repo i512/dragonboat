@@ -24,6 +24,38 @@ import (
 	sm "github.com/lni/dragonboat/v4/statemachine"
 )
 
+// userStateMachineError wraps errors from user state machines
+type userStateMachineError struct {
+	err error
+}
+
+func (e *userStateMachineError) Error() string {
+	return e.err.Error()
+}
+
+func (e *userStateMachineError) Unwrap() error {
+	return e.err
+}
+
+// wrapUserStateMachineError wraps user state machine errors
+func wrapUserStateMachineError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return &userStateMachineError{err: err}
+}
+
+// isUserStateMachineError checks if error is from user state machine
+func isUserStateMachineError(err error) bool {
+	var userErr *userStateMachineError
+	return errors.As(err, &userErr)
+}
+
+// IsUserStateMachineError exports the function for use in engine
+func IsUserStateMachineError(err error) bool {
+	return isUserStateMachineError(err)
+}
+
 // IStateMachine is an adapter interface for underlying sm.IStateMachine,
 // sm.IConcurrentStateMachine and sm.IOnDIskStateMachine instances.
 type IStateMachine interface {
@@ -289,58 +321,94 @@ func (s *OnDiskStateMachine) Open(stopc <-chan struct{}) (uint64, error) {
 	}
 	s.opened = true
 	applied, err := s.sm.Open(stopc)
-	return applied, errors.WithStack(err)
+	if err != nil {
+		return 0, wrapUserStateMachineError(err)
+	}
+	return applied, nil
 }
 
 // Update updates the state machine.
 func (s *OnDiskStateMachine) Update(entries []sm.Entry) ([]sm.Entry, error) {
 	s.ensureOpened()
 	results, err := s.sm.Update(entries)
-	return results, errors.WithStack(err)
+	if err != nil {
+		return nil, wrapUserStateMachineError(err)
+	}
+	return results, nil
 }
 
 // Lookup queries the state machine.
 func (s *OnDiskStateMachine) Lookup(query interface{}) (interface{}, error) {
 	s.ensureOpened()
-	return s.sm.Lookup(query)
+	result, err := s.sm.Lookup(query)
+	if err != nil {
+		return nil, wrapUserStateMachineError(err)
+	}
+	return result, nil
 }
 
 // NALookup queries the state machine.
 func (s *OnDiskStateMachine) NALookup(query []byte) ([]byte, error) {
 	s.ensureOpened()
-	return s.na.NALookup(query)
+	if s.na == nil {
+		return nil, sm.ErrNotImplemented
+	}
+	result, err := s.na.NALookup(query)
+	if err != nil {
+		return nil, wrapUserStateMachineError(err)
+	}
+	return result, nil
 }
 
 // Sync synchronizes all in-core state with that on disk.
 func (s *OnDiskStateMachine) Sync() error {
 	s.ensureOpened()
-	return errors.WithStack(s.sm.Sync())
+	err := s.sm.Sync()
+	if err != nil {
+		return wrapUserStateMachineError(err)
+	}
+	return nil
 }
 
 // Prepare makes preparations for taking concurrent snapshot.
 func (s *OnDiskStateMachine) Prepare() (interface{}, error) {
 	s.ensureOpened()
 	results, err := s.sm.PrepareSnapshot()
-	return results, errors.WithStack(err)
+	if err != nil {
+		return nil, wrapUserStateMachineError(err)
+	}
+	return results, nil
 }
 
 // Save saves the snapshot.
 func (s *OnDiskStateMachine) Save(ctx interface{},
 	w io.Writer, fc sm.ISnapshotFileCollection, stopc <-chan struct{}) error {
 	s.ensureOpened()
-	return errors.WithStack(s.sm.SaveSnapshot(ctx, w, stopc))
+	err := s.sm.SaveSnapshot(ctx, w, stopc)
+	if err != nil {
+		return wrapUserStateMachineError(err)
+	}
+	return nil
 }
 
 // Recover recovers the state machine from a snapshot.
 func (s *OnDiskStateMachine) Recover(r io.Reader,
 	fs []sm.SnapshotFile, stopc <-chan struct{}) error {
 	s.ensureOpened()
-	return errors.WithStack(s.sm.RecoverFromSnapshot(r, stopc))
+	err := s.sm.RecoverFromSnapshot(r, stopc)
+	if err != nil {
+		return wrapUserStateMachineError(err)
+	}
+	return nil
 }
 
 // Close closes the state machine.
 func (s *OnDiskStateMachine) Close() error {
-	return errors.WithStack(s.sm.Close())
+	err := s.sm.Close()
+	if err != nil {
+		return wrapUserStateMachineError(err)
+	}
+	return nil
 }
 
 // GetHash returns the uint64 hash value representing the state of a state
@@ -351,7 +419,10 @@ func (s *OnDiskStateMachine) GetHash() (uint64, error) {
 		return 0, sm.ErrNotImplemented
 	}
 	h, err := s.h.GetHash()
-	return h, errors.WithStack(err)
+	if err != nil {
+		return 0, wrapUserStateMachineError(err)
+	}
+	return h, nil
 }
 
 // Concurrent returns a boolean flag indicating whether the state machine is

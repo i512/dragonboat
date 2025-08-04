@@ -196,6 +196,11 @@ type Config struct {
 	// WaitReady specifies whether to wait for the node to transition
 	// from recovering to ready state before returning from StartReplica.
 	WaitReady bool
+	// Recover is called when the on-disk state machine returns an error.
+	// Only used for on-disk state machines. If set, the replica will be stopped
+	// and this function will be called with the error instead of panicking.
+	// This allows graceful handling of hardware failures like disk issues.
+	Recover func(error)
 }
 
 // Validate validates the Config instance and return an error when any member

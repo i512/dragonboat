@@ -263,6 +263,8 @@ func (w *ssWorker) workerMain() {
 				panic("req.node == nil")
 			}
 			if err := w.handle(job); err != nil {
+				// We need access to the engine here, but we don't have it
+				// For now, just panic - this is a limitation of the current design
 				panicNow(err)
 			}
 			w.completed()
@@ -289,6 +291,11 @@ func (w *ssWorker) recover(j job) error {
 	var err error
 	var index uint64
 	if index, err = j.node.recover(j.task); err != nil {
+		// Handle user state machine errors directly here
+		if handleUserStateMachineError(err, j.node) {
+			// Error was handled by recovery function, return nil to avoid panic
+			return nil
+		}
 		return err
 	}
 	j.node.recoverDone(index)
@@ -297,6 +304,11 @@ func (w *ssWorker) recover(j job) error {
 
 func (w *ssWorker) save(j job) error {
 	if err := j.node.save(j.task); err != nil {
+		// Handle user state machine errors directly here
+		if handleUserStateMachineError(err, j.node) {
+			// Error was handled by recovery function, return nil to avoid panic
+			return nil
+		}
 		return err
 	}
 	j.node.saveDone()
@@ -305,6 +317,11 @@ func (w *ssWorker) save(j job) error {
 
 func (w *ssWorker) stream(j job) error {
 	if err := j.node.stream(j.sink()); err != nil {
+		// Handle user state machine errors directly here
+		if handleUserStateMachineError(err, j.node) {
+			// Error was handled by recovery function, return nil to avoid panic
+			return nil
+		}
 		return err
 	}
 	j.node.streamDone()
@@ -784,7 +801,19 @@ func (w *closeWorker) handle(req closeReq) error {
 	if req.node.destroyed() {
 		return nil
 	}
-	return req.node.destroy()
+	err := req.node.destroy()
+	// Handle user state machine errors from Close method
+	if err != nil && handleUserStateMachineError(err, req.node) {
+		// Error was handled by recovery function, return nil to avoid panic
+		return nil
+	}
+	// After the node is fully destroyed, call the Recover function if it was set
+	// and this node had a user state machine error that triggered recovery
+	if err == nil && req.node.config.Recover != nil && req.node.wasDestroyedByStateMachineError() {
+		// Call the recovery function with the original error
+		req.node.config.Recover(req.node.getStateMachineError())
+	}
+	return err
 }
 
 type closeWorkerPool struct {
@@ -1072,6 +1101,28 @@ func (e *engine) crash(err error) {
 	}
 }
 
+// handleUserStateMachineError handles errors from user state machines
+// by stopping the replica gracefully if a Recover function is configured, otherwise panics
+// Returns true if the error was handled (recovery function was called), false otherwise
+func handleUserStateMachineError(err error, node *node) bool {
+	if rsm.IsUserStateMachineError(err) {
+		if node.config.Recover != nil {
+			// Mark that this node was destroyed due to a state machine error
+			node.setDestroyedByStateMachineError()
+			// Store the original error for the recovery function
+			node.setStateMachineError(err)
+			// Stop the replica gracefully by requesting removal
+			// This will close stopC, which NodeHost monitors and will call stopNode
+			// The Recover function will be called after the node is fully destroyed
+			node.requestRemoval()
+			return true
+		}
+	}
+	// For non-user state machine errors or when no recovery function is set, panic
+	panicNow(err)
+	return false
+}
+
 func (e *engine) close() error {
 	e.nodeStopper.Stop()
 	e.commitStopper.Stop()
@@ -1218,6 +1269,11 @@ func (e *engine) processApplies(idmap map[uint64]struct{},
 		}
 		task, err := node.handleTask(batch, entries)
 		if err != nil {
+			// Handle user state machine errors directly here
+			if handleUserStateMachineError(err, node) {
+				// Error was handled by recovery function, continue to next node
+				continue
+			}
 			return err
 		}
 		if task.IsSnapshotTask() {
@@ -1243,6 +1299,7 @@ func (e *engine) stepWorkerMain(workerID uint64) {
 			nodes, cci = e.loadStepNodes(workerID, cci, nodes)
 			a := make(map[uint64]struct{})
 			if err := e.processSteps(workerID, a, nodes, updates, stopC); err != nil {
+				// Error has already been handled at the source
 				panicNow(err)
 			}
 		case <-e.stepCCIReady.waitCh(workerID):
@@ -1253,6 +1310,7 @@ func (e *engine) stepWorkerMain(workerID uint64) {
 			}
 			a := e.stepWorkReady.getReadyMap(workerID)
 			if err := e.processSteps(workerID, a, nodes, updates, stopC); err != nil {
+				// Error has already been handled at the source
 				panicNow(err)
 			}
 		}
