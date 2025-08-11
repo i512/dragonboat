@@ -196,6 +196,13 @@ type Config struct {
 	// WaitReady specifies whether to wait for the node to transition
 	// from recovering to ready state before returning from StartReplica.
 	WaitReady bool
+	// FailHandler is an optional function that will be called to handle an
+	// IOnDiskStateMachine failure. If set, the replica will be stopped when the
+	// state machine returns an error (from all methods except Lookup), and then
+	// the FailHandler will be invoked. This is intended for cases where the state
+	// machine cannot continue (e.g., disk failure) but you don't want Dragonboat
+	// to panic.
+	FailHandler func(err error)
 }
 
 // Validate validates the Config instance and return an error when any member

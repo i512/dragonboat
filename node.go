@@ -127,6 +127,7 @@ type node struct {
 	logDBLimited          bool
 	rateLimited           bool
 	notifyCommit          bool
+	userStateMachineErr   error
 }
 
 var _ rsm.INode = (*node)(nil)
@@ -580,7 +581,30 @@ func (n *node) getLeaderID() (uint64, uint64, bool) {
 }
 
 func (n *node) destroy() error {
-	return n.sm.Close()
+	err := n.smClose()
+	n.callFailHandler()
+	return err
+}
+
+func (n *node) smClose() error {
+	err := n.sm.Close()
+
+	userErr := rsm.UnwrapUserSmError(err)
+	if userErr != nil && n.config.FailHandler != nil {
+		plog.Errorf("%s SM close failed", n.id())
+		n.userStateMachineErr = userErr
+		return nil
+	}
+
+	return err
+}
+
+func (n *node) callFailHandler() {
+	if n.userStateMachineErr != nil && n.config.FailHandler != nil {
+		go func() {
+			n.config.FailHandler(n.userStateMachineErr)
+		}()
+	}
 }
 
 func (n *node) destroyed() bool {
@@ -760,6 +784,14 @@ func (n *node) doSave(req rsm.SSRequest) (uint64, error) {
 	}
 	ss, ssenv, err := n.sm.Save(req)
 	if err != nil {
+		if n.handleUserStateMachineError(err) {
+			plog.Errorf("%s SM failed snapshot save: %v", n.id(), err)
+			if ssenv != (rsm.SSEnv{}) {
+				plog.Warningf("%s removing temp snapshot dir", n.id())
+				ssenv.MustRemoveTempDir()
+			}
+			return 0, nil
+		}
 		if saveAborted(err) {
 			plog.Warningf("%s save snapshot aborted, %v", n.id(), err)
 			ssenv.MustRemoveTempDir()
@@ -830,6 +862,10 @@ func (n *node) stream(sink pb.IChunkSink) error {
 	if sink != nil {
 		plog.Infof("%s requested to stream to %d", n.id(), sink.ToReplicaID())
 		if err := n.sm.Stream(sink); err != nil {
+			if n.handleUserStateMachineError(err) {
+				plog.Errorf("%s SM failed stream: %v", n.id(), err)
+				return nil
+			}
 			if !streamAborted(err) {
 				return errors.Wrapf(err, "%s stream failed", n.id())
 			}
@@ -849,6 +885,10 @@ func (n *node) recover(rec rsm.Task) (_ uint64, err error) {
 				plog.Warningf("%s aborted OpenOnDiskStateMachine", n.id())
 				return 0, nil
 			}
+			if n.handleUserStateMachineError(err) {
+				plog.Errorf("%s SM failed open: %v", n.id(), err)
+				return 0, nil
+			}
 			return 0, errors.Wrapf(err, "%s OpenOnDiskStateMachine failed", n.id())
 		}
 		if idx > 0 && rec.NewNode {
@@ -861,6 +901,10 @@ func (n *node) recover(rec rsm.Task) (_ uint64, err error) {
 			plog.Warningf("%s aborted recovery", n.id())
 			return 0, nil
 		}
+		if n.handleUserStateMachineError(err) {
+			plog.Errorf("%s SM failed recovery: %v", n.id(), err)
+			return 0, nil
+		}
 		return 0, errors.Wrapf(err, "%s recover failed", n.id())
 	}
 	if !pb.IsEmptySnapshot(ss) {
@@ -870,6 +914,10 @@ func (n *node) recover(rec rsm.Task) (_ uint64, err error) {
 		plog.Infof("%s recovered from %s", n.id(), n.ssid(ss.Index))
 		if n.OnDiskStateMachine() {
 			if err := n.sm.Sync(); err != nil {
+				if n.handleUserStateMachineError(err) {
+					plog.Errorf("%s SM sync after recover: %v", n.id(), err)
+					return 0, nil
+				}
 				return 0, errors.Wrapf(err, "%s sync failed", n.id())
 			}
 			if err := n.snapshotter.Shrink(ss.Index); err != nil {
@@ -916,7 +964,14 @@ func (n *node) recoverFromSnapshotDone() {
 }
 
 func (n *node) handleTask(ts []rsm.Task, es []sm.Entry) (rsm.Task, error) {
-	return n.sm.Handle(ts, es)
+	t, err := n.sm.Handle(ts, es)
+
+	if n.handleUserStateMachineError(err) {
+		plog.Errorf("%s SM handle task failed", n.id())
+		return rsm.Task{}, nil
+	}
+
+	return t, err
 }
 
 func (n *node) removeSnapshotFlagFile(index uint64) error {
@@ -1705,4 +1760,15 @@ func (n *node) millisecondSinceStart() uint64 {
 
 func (n *node) getRaftAddress() string {
 	return n.raftAddress
+}
+
+func (n *node) handleUserStateMachineError(err error) bool {
+	err = rsm.UnwrapUserSmError(err)
+	if err == nil {
+		return false
+	}
+
+	n.userStateMachineErr = err
+	n.requestRemoval()
+	return true
 }
