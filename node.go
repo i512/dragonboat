@@ -590,7 +590,7 @@ func (n *node) smClose() error {
 	err := n.sm.Close()
 
 	userErr := rsm.UnwrapUserSmError(err)
-	if userErr != nil && n.config.FailHandler != nil {
+	if userErr != nil && n.config.FaultHandler != nil {
 		plog.Errorf("%s SM close failed", n.id())
 		n.userStateMachineErr = userErr
 		return nil
@@ -600,9 +600,9 @@ func (n *node) smClose() error {
 }
 
 func (n *node) callFailHandler() {
-	if n.userStateMachineErr != nil && n.config.FailHandler != nil {
+	if n.userStateMachineErr != nil && n.config.FaultHandler != nil {
 		go func() {
-			n.config.FailHandler(n.userStateMachineErr)
+			n.config.FaultHandler(n.userStateMachineErr)
 		}()
 	}
 }

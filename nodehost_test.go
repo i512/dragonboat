@@ -5458,7 +5458,7 @@ func TestOnDiskSMOpenWithFailHandler(t *testing.T) {
 
 	to := &testOption{
 		updateConfig: func(c *config.Config) *config.Config {
-			c.FailHandler = func(err error) {
+			c.FaultHandler = func(err error) {
 				close(handled)
 				require.Equal(t, openErr, err)
 			}
@@ -5492,7 +5492,7 @@ func TestOnDiskSMCloseWithFailHandler(t *testing.T) {
 
 	to := &testOption{
 		updateConfig: func(c *config.Config) *config.Config {
-			c.FailHandler = func(err error) {
+			c.FaultHandler = func(err error) {
 				close(handled)
 				require.Equal(t, closeErr, err)
 			}
@@ -5529,7 +5529,7 @@ func TestOnDiskSMUpdateWithFailHandler(t *testing.T) {
 
 	to := &testOption{
 		updateConfig: func(c *config.Config) *config.Config {
-			c.FailHandler = func(err error) {
+			c.FaultHandler = func(err error) {
 				require.Equal(t, updateErr, err)
 				close(handled)
 			}
@@ -5595,7 +5595,7 @@ func TestOnDiskSMPrepareSnapshotWithFailHandler(t *testing.T) {
 
 	to := &testOption{
 		updateConfig: func(c *config.Config) *config.Config {
-			c.FailHandler = func(err error) {
+			c.FaultHandler = func(err error) {
 				close(handled)
 				require.Equal(t, prepareSnapshotErr, err)
 			}
@@ -5634,7 +5634,7 @@ func TestOnDiskSMSaveSnapshotWithFailHandler(t *testing.T) {
 
 	to := &testOption{
 		updateConfig: func(c *config.Config) *config.Config {
-			c.FailHandler = func(err error) {
+			c.FaultHandler = func(err error) {
 				close(handled)
 				require.Equal(t, saveSnapshotErr, err)
 			}
@@ -5699,7 +5699,7 @@ func TestOnDiskSMSnapshotSyncWithFailHandler(t *testing.T) {
 
 	to := &testOption{
 		updateConfig: func(c *config.Config) *config.Config {
-			c.FailHandler = func(err error) {
+			c.FaultHandler = func(err error) {
 				close(handled)
 				require.Equal(t, syncErr, err)
 			}
@@ -5797,7 +5797,7 @@ func TestOnDiskSMRecoverWithFailHandler(t *testing.T) {
 			CheckQuorum:        true,
 			SnapshotEntries:    5,
 			CompactionOverhead: 2,
-			FailHandler: func(err error) {
+			FaultHandler: func(err error) {
 				close(handled)
 				require.Equal(t, recoverErr, err)
 			},
