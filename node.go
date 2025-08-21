@@ -127,7 +127,7 @@ type node struct {
 	logDBLimited          bool
 	rateLimited           bool
 	notifyCommit          bool
-	userStateMachineErr   error
+	userStateMachineErr   atomic.Pointer[error]
 }
 
 var _ rsm.INode = (*node)(nil)
@@ -592,7 +592,7 @@ func (n *node) smClose() error {
 	userErr := rsm.UnwrapUserSmError(err)
 	if userErr != nil && n.config.FaultHandler != nil {
 		plog.Errorf("%s SM close failed", n.id())
-		n.userStateMachineErr = userErr
+		n.userStateMachineErr.CompareAndSwap(nil, &userErr)
 		return nil
 	}
 
@@ -600,9 +600,10 @@ func (n *node) smClose() error {
 }
 
 func (n *node) callFailHandler() {
-	if n.userStateMachineErr != nil && n.config.FaultHandler != nil {
+	err := n.userStateMachineErr.Load()
+	if err != nil && n.config.FaultHandler != nil {
 		go func() {
-			n.config.FaultHandler(n.userStateMachineErr)
+			n.config.FaultHandler(*err)
 		}()
 	}
 }
@@ -1768,7 +1769,7 @@ func (n *node) handleUserStateMachineError(err error) bool {
 		return false
 	}
 
-	n.userStateMachineErr = err
+	n.userStateMachineErr.CompareAndSwap(nil, &err)
 	n.requestRemoval()
 	return true
 }
